@@ -1,0 +1,29 @@
+[project]
+name = "nbaxp"
+version = "0.1.0"
+description = "Pre-game NBA point-margin model as an end-to-end ML system"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "duckdb",
+    "pandas",
+    "pyarrow",
+    "xgboost",
+    "scikit-learn",
+    "mlflow",
+    # 47+ has no macOS x86_64 wheel; the local venv is x86_64 (Rosetta) because XGBoost on arm64 needs an arm64 libomp
+    "cryptography<47",
+]
+
+[project.optional-dependencies]
+export = ["google-cloud-bigquery>=3.25", "google-cloud-bigquery-storage"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+nbaxp = "nbaxp.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 120
