@@ -14,13 +14,15 @@ INPUTS = {
     "train": ("features", "mlflow"),
     "replay": ("features", "mlflow", "reports"),
     "pipeline": ("raw", "mlflow", "reports"),  # mlflow and reports tell the pipeline whether it can skip train
+    "api": ("features", "staged", "serving"),  # staged holds the team names
 }
 OUTPUTS = {
     "stage": ("staged",),
     "features": ("features",),
     "train": ("mlflow", "reports"),
-    "replay": ("mlflow", "reports", "replay"),
-    "pipeline": ("staged", "features", "mlflow", "reports", "replay"),
+    "replay": ("mlflow", "reports", "replay", "serving"),
+    "pipeline": ("staged", "features", "mlflow", "reports", "replay", "serving"),
+    "api": (),
 }
 
 

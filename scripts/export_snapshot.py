@@ -16,7 +16,7 @@ import hashlib
 import json
 import shutil
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -108,7 +108,7 @@ def main() -> int:
             continue
         manifest["tables"][name] = export_table(bq, bqs, f"{args.project}.{args.dataset}.{name}", out_dir)
         # Rewrite after every table so an interrupted run keeps what finished.
-        manifest.update(snapshot=args.snapshot, exported_at=datetime.now(timezone.utc).isoformat())
+        manifest.update(snapshot=args.snapshot, exported_at=datetime.now(UTC).isoformat())
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
     print(f"Manifest: {manifest_path}")

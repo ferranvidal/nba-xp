@@ -53,6 +53,14 @@ def stage(data_dir: Path = Path("data"), snapshot: Path | None = None) -> dict[s
         ) to '{out / "player_minutes.parquet"}' (format parquet)
         """
     )
+    con.execute(  # one row per franchise: its latest name, for display
+        f"""
+        copy (
+            select distinct on (franchiseId) franchiseId, teamTricode, teamName
+            from teams order by franchiseId, startYear desc
+        ) to '{out / "teams.parquet"}' (format parquet)
+        """
+    )
     return {
         name: con.execute(f"select count(*) from read_parquet('{out / (name + '.parquet')}')").fetchone()[0]
         for name in ("games", "player_minutes")

@@ -1,8 +1,11 @@
 """Replay tests on a tiny synthetic season: no data dir, no MLflow."""
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
+from xgboost import XGBRegressor
 
 from nbaxp import replay
 from nbaxp.model import core
@@ -67,11 +70,78 @@ def test_retrain_rows_drop_bubble_and_early_seasons():
     assert replay.retrain_rows(df, DAY("2026-06-01"))["season"].eq("2025-26").all()
 
 
+class Stub:
+    """Stands in for a fitted model: `predict` maps the feature frame to mu."""
+
+    def __init__(self, mu_fn):
+        self.mu_fn = mu_fn
+
+    def predict(self, X):
+        return self.mu_fn(X)
+
+
+def bootstrap_case(challenger_fn):
+    """Games where margin = 3 * diff_elo + noise. The champion predicts 3 * diff_elo + 3 (a bias of 3 points)."""
+    rows = synthetic_season(n_days=50)
+    rows = rows[rows["season"] == core.TEST_SEASON]
+    champion = Stub(lambda X: 3 * X["diff_elo"].to_numpy() + 3)
+    return replay.paired_bootstrap(champion, Stub(challenger_fn), rows, 13.9)
+
+
+def test_bootstrap_promotes_clearly_better_challenger():
+    p_mae, p_brier = bootstrap_case(lambda X: 3 * X["diff_elo"].to_numpy())  # removes the bias
+    assert p_mae >= 0.9 and p_brier >= 0.9
+    assert replay.promote(p_mae, p_brier)
+
+
+def test_bootstrap_does_not_promote_identical_challenger():
+    p_mae, p_brier = bootstrap_case(lambda X: 3 * X["diff_elo"].to_numpy() + 3)
+    assert (p_mae, p_brier) == (0.0, 0.0)  # ties never count as a win
+    assert not replay.promote(p_mae, p_brier)
+
+
+def test_bootstrap_does_not_promote_noise_sized_gap():
+    noise = np.random.default_rng(1).normal(scale=0.05, size=200)
+    p_mae, p_brier = bootstrap_case(lambda X: 3 * X["diff_elo"].to_numpy() + 3 + noise)
+    assert not replay.promote(p_mae, p_brier)
+    assert 0.1 < p_mae < 0.9  # a coin flip, far from either end
+
+
+def test_bootstrap_is_deterministic():
+    fn = lambda X: 3 * X["diff_elo"].to_numpy() + 0.5
+    assert bootstrap_case(fn) == bootstrap_case(fn)
+
+
 def test_promotion_needs_both_metrics():
-    assert replay.promote((11.0, 0.21), (10.9, 0.20))
-    assert not replay.promote((11.0, 0.21), (10.9, 0.22))  # better MAE, worse Brier
-    assert not replay.promote((11.0, 0.21), (11.1, 0.20))  # worse MAE, better Brier
-    assert not replay.promote((11.0, 0.21), (11.0, 0.20))  # tie on MAE
+    assert replay.promote(0.90, 0.95)
+    assert not replay.promote(0.89, 0.99)
+    assert not replay.promote(0.99, 0.89)
+
+
+def test_drift_skips_game_type_flags():
+    assert not set(replay.DRIFT_COLS) & set(replay.GAME_TYPE_FLAGS)
+    assert len(replay.DRIFT_COLS) == len(core.FEATURE_COLS) - 3  # is_play_in, is_playoffs, is_nba_cup
+
+
+def test_seasonal_reference_matches_window_days_into_season():
+    df = synthetic_season()  # both seasons have 120 days; 2025-26 starts 2025-10-21, 2024-25 on 2024-10-22
+    test = df[df["season"] == core.TEST_SEASON]
+    win = replay.window_rows(test, DAY("2025-12-01"))  # days 11..40 of the season
+    ref = replay.seasonal_reference(core.training_rows(df), test, win)
+    assert ref["season"].eq("2024-25").all()
+    assert ref["gameDate"].min() == DAY("2024-11-02") and ref["gameDate"].max() == DAY("2024-12-01")
+    assert len(ref) == 30 * 4
+
+
+def test_export_serving_round_trips(tmp_path):
+    df = synthetic_season(n_days=30)
+    model = core.fit(core.training_rows(df), PARAMS)
+    replay.export_serving(model, {"sigma": 13.9, "model_version": "3"}, tmp_path / "serving")
+    meta = json.loads((tmp_path / "serving" / "meta.json").read_text())
+    assert meta["sigma"] == 13.9 and meta["feature_cols"] == core.FEATURE_COLS
+    loaded = XGBRegressor()
+    loaded.load_model(tmp_path / "serving" / "model.json")
+    np.testing.assert_array_equal(core.predict_mu(loaded, df), core.predict_mu(model, df))
 
 
 def test_trigger_rules():

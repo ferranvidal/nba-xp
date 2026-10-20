@@ -1,4 +1,5 @@
 import argparse
+import os
 import time
 from pathlib import Path
 
@@ -14,6 +15,7 @@ def main() -> None:
     sub.add_parser("train", help="data/features -> dev CV, MLflow, data/reports/dev_cv.json")
     sub.add_parser("replay", help="replay 2025-26 day by day -> data/replay, data/reports/replay.json")
     sub.add_parser("pipeline", help="stage, features, train (if no champion yet), replay")
+    sub.add_parser("api", help="serve the 2025-26 predictions on 0.0.0.0:$PORT (default 8080)")
     args = parser.parse_args()
 
     root = sync.data_root()  # DATA_ROOT=gs://... : work in a local dir, sync with the bucket
@@ -43,6 +45,12 @@ def main() -> None:
         s = replay(args.data_dir)
         print(f"replay: {s['n_games']} games, {s['n_checks']} checks, {s['n_promoted']} promoted")
         print(f"MAE chain {s['champion_chain']['mae']:.3f}, frozen v1 {s['frozen_v1']['mae']:.3f}")
+    if args.command == "api":
+        import uvicorn
+
+        from nbaxp.api import create_app
+
+        uvicorn.run(create_app(args.data_dir), host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
     print(f"{args.command} took {time.time() - t0:.1f} s")
     if root:
         sync.upload(root, args.data_dir, sync.OUTPUTS[args.command])

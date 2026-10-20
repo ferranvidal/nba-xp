@@ -27,11 +27,16 @@ WINDOW = pd.Timedelta(days=30)  # training cutoff, scoring window, rolling MAE a
 MIN_GAP = pd.Timedelta(days=7)  # at most one MAE-triggered check per 7 days
 MAE_MARGIN = 1.0  # rolling MAE above dev MAE + 1.0 fires a check
 PSI_FLAG = 0.2
+GAME_TYPE_FLAGS = ("is_regular_season", "is_play_in", "is_playoffs", "is_nba_cup", "is_bubble")
+DRIFT_COLS = [c for c in core.FEATURE_COLS if c not in GAME_TYPE_FLAGS]
+BOOTSTRAP_B = 1000  # resamples of the window's games for the promotion gate
+BOOTSTRAP_SEED = 0  # fixed: a rerun from scratch gives identical outputs
+PROMOTE_SHARE = 0.90  # the challenger must win this share of the resamples, on MAE and on Brier
 PSI_EPS = 1e-4  # floor for a bin share, so empty bins do not give log(0)
 CHECK_COLS = [
     "check_date", "trigger", "rolling_mae", "n_window_games", "n_train_rows",
     "champion_version", "champion_mae", "champion_brier", "challenger_mae", "challenger_brier",
-    "promoted", "new_version", "n_drift_flags",
+    "p_better_mae", "p_better_brier", "promoted", "new_version", "n_drift_flags",
 ]  # fmt: skip
 
 
@@ -70,9 +75,33 @@ def trigger(day, prev_day, start, last_check, rolling_mae: float, dev_mae: float
     return None
 
 
-def promote(champion: tuple[float, float], challenger: tuple[float, float]) -> bool:
-    """Scores are (MAE, Brier of p_home_win). The challenger must be lower on both."""
-    return challenger[0] < champion[0] and challenger[1] < champion[1]
+def days_into_season(df: pd.DataFrame) -> pd.Series:
+    """Days between each game and the first game of its season."""
+    return (df["gameDate"] - df.groupby("season")["gameDate"].transform("min")).dt.days
+
+
+def seasonal_reference(train: pd.DataFrame, test: pd.DataFrame, win: pd.DataFrame) -> pd.DataFrame:
+    """Training rows at the same point of the season as the window: their days since the first game of their season
+    fall between the min and max of the window's. `win` is a slice of `test`, the full replay season."""
+    window_days, train_days = days_into_season(test)[win.index], days_into_season(train)
+    return train[train_days.between(window_days.min(), window_days.max())]
+
+
+def paired_bootstrap(champion, challenger, rows: pd.DataFrame, sigma: float) -> tuple[float, float]:
+    """Resample the games of `rows` with replacement. Return the share of resamples where the challenger has a
+    lower MAE, and the share where it has a lower Brier of p_home_win. Both models see the same resamples."""
+    margin = rows["margin"].to_numpy()
+    mu = [core.predict_mu(m, rows) for m in (champion, challenger)]
+    mae = [np.abs(margin - m) for m in mu]
+    brier = [(core.probabilities(m, sigma)["p_home_win"] - core.TARGETS["p_home_win"](margin)) ** 2 for m in mu]
+    idx = np.random.default_rng(BOOTSTRAP_SEED).integers(0, len(rows), size=(BOOTSTRAP_B, len(rows)))
+    share = lambda champ, chall: float(np.mean(chall[idx].mean(axis=1) < champ[idx].mean(axis=1)))
+    return share(*mae), share(*brier)
+
+
+def promote(p_better_mae: float, p_better_brier: float) -> bool:
+    """Promote when the challenger wins at least 90% of the resamples on both metrics."""
+    return p_better_mae >= PROMOTE_SHARE and p_better_brier >= PROMOTE_SHARE
 
 
 def score(model, rows: pd.DataFrame, sigma: float) -> tuple[float, float]:
@@ -83,20 +112,23 @@ def score(model, rows: pd.DataFrame, sigma: float) -> tuple[float, float]:
 def retrain_check(df, test, champion, day, why, rolling_mae, params, sigma, register_model):
     """One check: drift on the last 30 days, challenger vs champion on the same days. Returns (champion, row, drift)."""
     win = window_rows(test, day)
-    drift = [
-        {"check_date": day, "feature": c, "psi": psi(champion["train"][c], win[c])} for c in core.FEATURE_COLS
-    ]  # record-count features (wins, losses) drift by construction early in a season; so do the game-type flags
+    # Record-count features (wins, losses) grow through a season, so the reference is the same point of earlier
+    # seasons. The game-type flags follow the calendar, so they are not checked.
+    ref = seasonal_reference(champion["train"], test, win)
+    drift = [{"check_date": day, "feature": c, "psi": psi(ref[c], win[c])} for c in DRIFT_COLS]
     for d in drift:
         d["flagged"] = d["psi"] > PSI_FLAG
     train = retrain_rows(df, day)
     challenger = core.fit(train, params)
     champ_score, chall_score = score(champion["model"], win, sigma), score(challenger, win, sigma)
-    promoted = promote(champ_score, chall_score)
+    p_mae, p_brier = paired_bootstrap(champion["model"], challenger, win, sigma)
+    promoted = promote(p_mae, p_brier)
     row = {
         "check_date": day, "trigger": why, "rolling_mae": rolling_mae, "n_window_games": len(win),
         "n_train_rows": len(train), "champion_version": champion["version"],
         "champion_mae": champ_score[0], "champion_brier": champ_score[1],
         "challenger_mae": chall_score[0], "challenger_brier": chall_score[1],
+        "p_better_mae": p_mae, "p_better_brier": p_brier,
         "promoted": promoted, "new_version": None, "n_drift_flags": sum(d["flagged"] for d in drift),
     }  # fmt: skip
     if promoted:
@@ -154,6 +186,13 @@ def mae_by_type(frame: pd.DataFrame, mu) -> dict:
     return {t: {"n": len(g), "mae": float(g["e"].mean())} for t, g in err.groupby("t")}
 
 
+def export_serving(model, meta: dict, out_dir: Path) -> None:
+    """Write the model in XGBoost's native JSON and `meta.json`: a folder that loads without MLflow."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model.save_model(out_dir / "model.json")
+    (out_dir / "meta.json").write_text(json.dumps({**meta, "feature_cols": core.FEATURE_COLS}, indent=2))
+
+
 def replay(data_dir: Path = Path("data")) -> dict:
     df = pd.read_parquet(data_dir / "features" / "features.parquet")
     dev = json.loads((data_dir / "reports" / "dev_cv.json").read_text())
@@ -169,10 +208,13 @@ def replay(data_dir: Path = Path("data")) -> dict:
     for run in mlflow.search_runs(filter_string="attributes.run_name = 'replay'", output_format="list"):
         client.delete_run(run.info.run_id)
 
+    final = {}  # the last registered model is the champion at the end of the replay
+
     def register_model(model) -> str:
         version = register(model, sigma, REPLAY_MODEL)
         client.set_registered_model_alias(REPLAY_MODEL, CHAMPION, version)
-        return str(version)
+        final.update(model=model, version=str(version))
+        return final["version"]
 
     with mlflow.start_run(run_name="replay"):
         mlflow.log_params({"sigma": sigma, "dev_mae": dev_mae, **{f"param_{k}": v for k, v in params.items()}})
@@ -181,7 +223,8 @@ def replay(data_dir: Path = Path("data")) -> dict:
         for i, row in out["checks"].iterrows():
             mlflow.log_metrics(
                 {k: float(row[k]) for k in ("rolling_mae", "champion_mae", "champion_brier", "challenger_mae",
-                                            "challenger_brier", "promoted", "n_drift_flags")},
+                                            "challenger_brier", "p_better_mae", "p_better_brier", "promoted",
+                                            "n_drift_flags")},
                 step=i,
             )  # fmt: skip
         mlflow.log_table(out["checks"].astype({"check_date": str}), "checks.json")
@@ -219,6 +262,16 @@ def replay(data_dir: Path = Path("data")) -> dict:
         out_dir.mkdir(parents=True, exist_ok=True)
         for name, frame in out.items():
             frame.to_parquet(out_dir / f"{name}.parquet", index=False)
+        promoted = checks[checks["new_version"] == final["version"]]  # empty if the dev champion is still champion
+        trained_on = retrain_rows(df, promoted["check_date"].iloc[0]) if len(promoted) else core.training_rows(df)
+        export_serving(
+            final["model"],
+            {
+                "sigma": sigma, "model_name": REPLAY_MODEL, "model_version": final["version"],
+                "train_cutoff": str(trained_on["gameDate"].max().date()), "dev_mae": dev_mae,
+            },
+            data_dir / "serving",
+        )  # fmt: skip
         report = data_dir / "reports" / "replay.json"
         report.write_text(json.dumps(summary, indent=2))
         mlflow.log_metrics({f"chain_{k}": v for k, v in summary["champion_chain"].items()})

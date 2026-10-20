@@ -12,13 +12,15 @@ dependencies = [
     "scipy",
     "mlflow",
     "google-cloud-storage",
+    "fastapi",
+    "uvicorn",
     # 47+ has no macOS x86_64 wheel; the local venv is x86_64 (Rosetta) because XGBoost on arm64 needs an arm64 libomp
     "cryptography<47",
 ]
 
 [project.optional-dependencies]
 export = ["google-cloud-bigquery>=3.25", "google-cloud-bigquery-storage"]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "httpx"]
 
 [project.scripts]
 nbaxp = "nbaxp.cli:main"

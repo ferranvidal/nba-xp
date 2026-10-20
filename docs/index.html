@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nba-xp: NBA margin model, visual documentation</title>
+<meta name="description" content="Features, decisions and validation results of nba-xp, a pre-game NBA point-margin model built as an end-to-end ML system. Shows where the model beats an Elo baseline and where it does not.">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <h1>nba-xp: a pre-game NBA margin model</h1>
+  <p class="lead">The model predicts the final point margin of an NBA game before it starts. This page shows the data splits, the features, the decisions, and the validation results. It also shows where the model does not beat a simple baseline.</p>
+  <div class="meta">
+    <a href="https://github.com/ferranvidal/nba-xp">Code on GitHub</a>
+    <span>Data snapshot <span data-k="meta.snapshot"></span></span>
+    <span id="status">Loading data...</span>
+    <button id="themebtn" type="button" aria-label="Change colour theme">Theme: auto</button>
+  </div>
+</header>
+
+<div class="layout">
+<nav class="toc" aria-label="Sections">
+  <a href="#predicts">1 What it predicts</a>
+  <a href="#split">2 Time split</a>
+  <a href="#features">3 Features</a>
+  <a href="#decisions">4 Decisions</a>
+  <a href="#validation">5 Validation</a>
+  <a href="#replay">6 Test season replay</a>
+  <a href="#monitoring">7 Monitoring</a>
+  <a href="#architecture">8 Architecture</a>
+  <a href="#limits">9 Limits</a>
+</nav>
+
+<main>
+
+<!-- ============================================================ 1 -->
+<section id="predicts">
+  <h2><span class="num">1</span>What it predicts</h2>
+  <p>The model predicts the <b>margin</b> of a game: the home team's final points minus the away team's final points. It predicts a Normal distribution, not one number. The mean of the distribution (<b>mu</b>) comes from an XGBoost regressor. The spread (<b>sigma</b>) is one fixed number for all games: <span data-k="dev.sigma" data-d="2"></span> points.</p>
+  <p>From that one distribution the model derives three probabilities. <b>P(home win)</b> is the chance that the margin is above 0. <b>P(blowout)</b> is the chance that the margin is 15 points or more in either direction. <b>P(tight game)</b> is the chance that the margin is 5 points or fewer in either direction.</p>
+
+  <h3>Headline result on the test season</h3>
+  <p>On the 2025-26 test season (<span data-k="test.n_games" data-f="int"></span> games), the model misses the margin by <span data-k="test.models.chain.mae" data-d="1"></span> points on average. That is <span data-k="test.boot_chain_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points better than the Elo baseline and <span data-k="test.gain_home_only" data-d="1"></span> points better than the home-only baseline. The edge over the Elo baseline is small. The 95% interval of the difference includes zero, so one test season cannot show that the edge is real.</p>
+  <div class="tiles" id="tiles"></div>
+  <div class="callout">
+    <p><b>Where the model is weaker than it looks.</b> Test MAE (<span data-k="test.models.chain.mae" data-d="2"></span>) is higher than development MAE (<span data-k="dev.models.xgboost.pooled.mae" data-d="2"></span>). The Elo baseline rose by the same amount (<span data-k="dev.models.elo.pooled.mae" data-d="2"></span> to <span data-k="test.models.elo.mae" data-d="2"></span>). I infer that 2025-26 was harder to predict for both models. I did not test why.</p>
+  </div>
+
+  <h3>One game, as the model sees it</h3>
+  <p>The curve is the predicted distribution of the margin for one game of the test season. The shaded area is the probability of the event named above each chart. The vertical line is the actual margin. Pick another game with the buttons.</p>
+  <div class="card" id="game">
+    <div class="btns" id="game-btns" role="group" aria-label="Choose a game">
+      <button type="button" data-pick="typical" aria-pressed="true">Typical game</button>
+      <button type="button" data-pick="close">Best call</button>
+      <button type="button" data-pick="worst">Biggest miss</button>
+      <button type="button" data-pick="random">Random game</button>
+    </div>
+    <div class="gamehead" id="game-head"></div>
+    <div class="grid3" id="game-charts"></div>
+    <p class="small" id="game-note" style="margin:8px 0 0"></p>
+  </div>
+  <p class="small">"Typical game" is the regular-season game whose absolute error is closest to the median absolute error of the season. "Best call" is the game with the smallest error. "Biggest miss" is the game with the largest error.</p>
+
+  <h3>Terms on this page</h3>
+  <dl class="terms">
+    <div><dt>MAE (mean absolute error)</dt><dd>The average of |actual margin - mu|, in points. Lower is better.</dd></div>
+    <div><dt>Brier score</dt><dd>The average of (predicted probability - outcome)^2, where the outcome is 0 or 1. Lower is better. A model that always says 50% scores 0.25.</dd></div>
+    <div><dt>Development</dt><dd>The seasons 2015-16 to 2024-25. The model trains and the choices are made on these seasons only.</dd></div>
+    <div><dt>Fold, out-of-fold prediction</dt><dd>A fold is one train/validate split. An out-of-fold prediction is a prediction for a game by a model that trained only on earlier seasons.</dd></div>
+    <div><dt>Test season</dt><dd>The 2025-26 season. No choice was made on it. The replay predicts it one game day at a time.</dd></div>
+    <div><dt>Elo rating, Elo baseline</dt><dd>The Elo rating is a strength number per team, used as a feature. The Elo baseline is a model: a straight line from the home-minus-away Elo rating to the margin, fitted on the training games.</dd></div>
+    <div><dt>Home-only baseline</dt><dd>A model that predicts the same margin (the average training margin, +<span data-k="features.mean_margin" data-d="1"></span> points) for every game.</dd></div>
+    <div><dt>Champion chain, frozen v1</dt><dd>In the replay, the champion chain is the model that the replay may retrain and replace. Frozen v1 is the development model that is never retrained. If no check promotes a challenger, the two are the same model.</dd></div>
+    <div><dt>Game day</dt><dd>A calendar day with at least one game.</dd></div>
+  </dl>
+</section>
+
+<!-- ============================================================ 2 -->
+<section id="split">
+  <h2><span class="num">2</span>Time split</h2>
+  <p>The model never sees a game from the future of the game it predicts. Three rules enforce this, one at each level of the system. The diagram below shows the second and third rule. It is the most important diagram on this page, because a wrong split would make every other number meaningless.</p>
+  <ol>
+    <li><b>As-of rule (features).</b> A feature for a game on date D uses only games with a game date before D. Games on the same day do not count. A test checks this rule: removing all games on or after D changes no feature for games on D.</li>
+    <li><b>Forward chaining (development).</b> Each fold trains on all seasons before one season and validates on that season. There is no random split.</li>
+    <li><b>Untouched test season (evaluation).</b> The 2025-26 season is never used to tune or to choose. The replay predicts it one game day at a time.</li>
+  </ol>
+
+  <figure class="fig">
+    <figcaption>
+      <div class="t">Seasons, folds and the test season</div>
+      <div class="d">Each column is one season. Blue is training, orange is validation, green is the test season. Grey with stripes is excluded. Empty outlines are not used in that row.</div>
+    </figcaption>
+    <div class="scroll-x" id="timeline-svg"></div>
+  </figure>
+  <ul>
+    <li><b>Warm-up.</b> The seasons 2013-14 and 2014-15 only feed the Elo rating and the form features, so these features are mature when training starts in 2015-16.</li>
+    <li><b>Bubble.</b> <span data-k="timeline.bubble_games"></span> games from 2020-07-01 on (the restart in Orlando) are not training rows. They still update the Elo rating and the form features.</li>
+    <li><b>Final model.</b> The model that goes to the test season trains on all <span data-k="timeline.final_n_train" data-f="int"></span> training games of 2015-16 to 2024-25. The four folds are used to choose settings and sigma, not to build the final model.</li>
+  </ul>
+
+  <div class="grid2">
+    <figure class="fig">
+      <figcaption>
+        <div class="t">The as-of rule on one game day</div>
+        <div class="d">Features of the games on day D use only the blue games.</div>
+      </figcaption>
+      <div class="scroll-x" id="asof-svg"></div>
+    </figure>
+    <figure class="fig">
+      <figcaption>
+        <div class="t">A retrain check in the replay</div>
+        <div class="d">The challenger never trains on the 30 days it is scored on.</div>
+      </figcaption>
+      <div class="scroll-x" id="retrain-svg"></div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 3 -->
+<section id="features">
+  <h2><span class="num">3</span>Features</h2>
+  <p>The model has <span data-k="features.n_feature_cols"></span> input columns from 10 feature families. Most families give three columns per quantity: one for the home team (<code>home_</code>), one for the away team (<code>away_</code>), and the home value minus the away value (<code>diff_</code>). The strongest columns are the <code>diff_</code> ones: <code>diff_win_pct</code>, <code>diff_elo</code> and <code>diff_wins</code>.</p>
+  <p>Each chart below uses the <span data-k="features.n_rows" data-f="int"></span> training games (2015-16 to 2024-25, bubble excluded). It plots the mean home margin of the games in each bin of the home-minus-away value. The bars are 95% intervals of the mean. A flat line means the feature alone does not move the margin.</p>
+  <div id="fam-list"></div>
+
+  <h3>Which features carry the signal</h3>
+  <p>Two measures answer this question, and they do not agree for every family. <b>Gain</b> is how much the splits on a column reduce the training error, summed over all trees. It shows what the trees use. <b>Removal cost</b> is the rise in out-of-fold MAE when I retrain the model without the family. It shows what the model needs to predict new games.</p>
+  <div class="grid2">
+    <div id="f-importance-family"></div>
+    <div id="f-importance-top"></div>
+  </div>
+  <div id="f-ablation"></div>
+  <div class="callout info" id="signal-note"></div>
+</section>
+
+<!-- ============================================================ 4 -->
+<section id="decisions">
+  <h2><span class="num">4</span>Decisions</h2>
+  <p>Each row names a decision, the alternatives I considered, the reason, and the evidence. I write "I did not test" where I have no measurement. Rows marked <span class="badge new">new</span> describe code that changed recently.</p>
+  <div class="tbl">
+  <table class="decisions">
+    <thead><tr><th>Decision</th><th>Alternatives considered</th><th>Why</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr>
+        <td data-l="Decision">Store data as Parquet files and query them with DuckDB inside the job</td>
+        <td data-l="Alternatives">A warehouse such as BigQuery or Snowflake. A Postgres database.</td>
+        <td data-l="Why">The data is small and read-only. A warehouse adds cost and a server to run. Parquet keeps the same folder layout on disk and in the bucket <code>gs://nba-data</code>.</td>
+        <td data-l="Evidence">The staged and feature files are <span data-k="meta.mb.model_inputs" data-d="1"></span> MB together. The raw snapshot is <span data-k="meta.mb.raw_snapshot" data-d="0"></span> MB, mostly tables the model does not read, such as shots. I did not benchmark a warehouse.</td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Validate with forward chaining by season</td>
+        <td data-l="Alternatives">Random K-fold.</td>
+        <td data-l="Why">Random K-fold lets the model train on games played after the validation game. Team strength changes over time, so the score would look better than it is. Forward chaining copies how the model is used.</td>
+        <td data-l="Evidence">Training size per fold: <span id="ev-folds"></span> games. Each fold validates on about 1,320 games of one later season. I did not measure how much random K-fold would inflate the score.</td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Exclude the 2019-20 bubble games from training</td>
+        <td data-l="Alternatives">Keep them. Drop the whole 2019-20 season.</td>
+        <td data-l="Why">The bubble games had a neutral site and no crowd, so home advantage differs. Dropping the whole season would also lose normal games. The bubble games still tell how strong the teams were, so Elo and form still use them.</td>
+        <td data-l="Evidence"><span data-k="timeline.bubble_games"></span> games excluded. <span data-k="timeline.season_2019_train" data-f="int"></span> games of 2019-20 stay in training. The Elo update uses a home advantage of 0 for the bubble. I did not test the effect on the score.</td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Key every team on <code>franchiseId</code></td>
+        <td data-l="Alternatives">Key on <code>teamId</code> or on the team name.</td>
+        <td data-l="Why">A franchise keeps its history across a rename. The Elo rating and the form features must not reset when a team changes its name.</td>
+        <td data-l="Evidence">In the source table, a <code>teamId</code> joins the <code>franchiseId</code> and a start year (for example <code>1610610023-1949</code>), so it changes at a rename. I did not measure the effect on the score.</td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Predict a Normal distribution with one global sigma</td>
+        <td data-l="Alternatives">A sigma that depends on the game. A heavier-tailed distribution. One classifier per probability.</td>
+        <td data-l="Why">One distribution gives all three probabilities, and they stay consistent with each other. One sigma is one number to estimate from 5,283 out-of-fold games.</td>
+        <td data-l="Evidence" id="ev-normal"></td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Use a shallow XGBoost model chosen from a grid of 12 settings</td>
+        <td data-l="Alternatives">Deeper trees. A neural network. A linear model.</td>
+        <td data-l="Why">The signal is weak and the data is small. A small grid limits how much the choice fits the noise of the validation seasons.</td>
+        <td data-l="Evidence" id="ev-grid"></td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Use the Elo baseline as the model to beat</td>
+        <td data-l="Alternatives">Compare only with the home-only baseline. Compare with betting lines.</td>
+        <td data-l="Why">Elo is a standard simple strength model for the NBA. A model that cannot beat it adds little. Betting lines are not in the snapshot.</td>
+        <td data-l="Evidence" id="ev-elo"></td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Count a team as eliminated when it cannot reach 10th place in its conference (8th before 2020-21)</td>
+        <td data-l="Alternatives">Always use 8th place. Compute tiebreakers exactly.</td>
+        <td data-l="Why">The play-in started in 2020-21. Teams in 7th to 10th place compete for the last two playoff spots, so a team is out only when it cannot reach 10th. The check ignores tiebreakers, so the flag can lag by one game.</td>
+        <td data-l="Evidence" id="ev-elim"></td>
+      </tr>
+      <tr>
+        <td data-l="Decision"><span class="badge new">new</span> Promote a retrained model only when a paired bootstrap on the last 30 days says it is better with probability at least 0.9, on MAE and on Brier score</td>
+        <td data-l="Alternatives">Promote when the challenger has a lower MAE and Brier score (earlier rule). Never retrain. Retrain on a schedule with no check.</td>
+        <td data-l="Why">The challenger and the champion differ by tiny amounts on about 200 games. A rule that compares two numbers promotes on noise. The bootstrap resamples the per-game differences 1,000 times and asks how often the challenger wins. I designed this rule after I saw the first replay of 2025-26, where the earlier rule promoted 8 of 18 times. So the replay is a clean test of the development model, but not a blind test of this rule.</td>
+        <td data-l="Evidence" id="ev-gate"></td>
+      </tr>
+      <tr>
+        <td data-l="Decision"><span class="badge new">new</span> Compare recent games with the training games at the same point of the season, and leave out the game-type flags</td>
+        <td data-l="Alternatives">Compare with all training games (earlier rule). No drift monitor.</td>
+        <td data-l="Why">Some features change by design during a season. Win and loss counts are low in October and high in April. A fixed reference flags them at every check, so the flags carry no information. I also chose this reference after I saw the first replay of 2025-26.</td>
+        <td data-l="Evidence" id="ev-drift"></td>
+      </tr>
+      <tr>
+        <td data-l="Decision">Replay the 2025-26 season day by day instead of ingesting live games</td>
+        <td data-l="Alternatives">A live feed with a scheduler.</td>
+        <td data-l="Why">A live feed needs an always-on scheduler and a source that updates. That costs money. This is a personal project with no company infrastructure to run it on. The replay uses the same code path as a live job would: it receives one day of results, then predicts the next day.</td>
+        <td data-l="Evidence" id="ev-replay"></td>
+      </tr>
+      <tr>
+        <td data-l="Decision">No data-quality checks on the snapshot</td>
+        <td data-l="Alternatives">Schema, range and duplicate checks at staging.</td>
+        <td data-l="Why">The owner of the data judged the snapshot sound, and it is frozen. Checks are worth more for a source that keeps changing.</td>
+        <td data-l="Evidence">The pipeline runs no checks, so a bad row would pass through silently. The repository has unit tests for the as-of rule and for one hand-checked example per feature family.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <div id="f-grid"></div>
+</section>
+
+<!-- ============================================================ 5 -->
+<section id="validation">
+  <h2><span class="num">5</span>Validation on the development seasons</h2>
+  <p>On the development folds the XGBoost model beats the Elo baseline on MAE by <span data-k="dev.boot_xgb_vs_elo.mae.mean" data-f="neg" data-d="3"></span> points, and the 95% interval stays above zero. On the Brier score of P(home win) the gain is <span data-k="dev.boot_xgb_vs_elo.brier_p_home_win.mean" data-f="neg" data-d="4"></span>, and the interval includes zero. Both baselines are far behind the home-only baseline. All numbers are out-of-fold: the model that predicts a game never trained on that game's season or later.</p>
+  <div class="tbl" id="tbl-dev"></div>
+  <p class="small">Each interval comes from a paired bootstrap over the <span data-k="dev.n_oof" data-f="int"></span> out-of-fold games (2,000 resamples, seed 0). The bootstrap treats games as independent.</p>
+
+  <h3>Reliability of the three probabilities</h3>
+  <p>A reliability diagram groups games by predicted probability into 10 bins with equal game counts. A point on the diagonal means that the events happen as often as the model says. Bars are 95% Wilson intervals. P(home win) tracks the diagonal. P(blowout) and P(tight game) hardly vary between games: the model predicts nearly the same value for most games, so there is little for the diagram to test.</p>
+  <div class="grid3">
+    <div id="f-rel-dev-p_home_win"></div>
+    <div id="f-rel-dev-p_blowout"></div>
+    <div id="f-rel-dev-p_tight"></div>
+  </div>
+
+  <h3>Predicted margin against actual margin</h3>
+  <p>The points show the mean actual margin for 12 groups of games, sorted by mu. The model sorts games in the right order, and its predictions have a narrower range than the margins: the standard deviation of mu is <span data-k="dev.sd_mu" data-d="1"></span> points, and that of the margin is <span data-k="dev.sd_margin" data-d="1"></span> points. The model explains <span data-k="dev.r2" data-f="pct" data-d="0"></span> of the variance of the margin out of fold.</p>
+  <div id="f-muvs"></div>
+
+  <h3>Does the Normal distribution with one sigma fit?</h3>
+  <p>The left chart compares the residuals (actual margin minus mu) with the Normal curve that the model assumes. The right chart shows the spread of the residuals in different groups. A global sigma assumes that all bars have the same length.</p>
+  <div class="grid2">
+    <div id="f-resid"></div>
+    <div id="f-sd"></div>
+  </div>
+  <div class="callout info" id="resid-note"></div>
+</section>
+
+<!-- ============================================================ 6 -->
+<section id="replay">
+  <h2><span class="num">6</span>Test season replay (2025-26)</h2>
+  <p id="replay-lead"></p>
+  <ul>
+    <li>A retrain check runs on the first game day of each month, and when the rolling 30-day MAE rises more than 1 point above the development MAE (at most one such check per 7 days). No check runs in the first 30 days.</li>
+    <li>A check trains a challenger on all games before D minus 30 days. It scores the champion and the challenger on the 30 days before D. The promotion gate then resamples the games of that window 1,000 times. It promotes the challenger only if the challenger has the lower MAE in at least 90% of the resamples, and also the lower Brier score in at least 90% of the resamples.</li>
+    <li>Sigma and the XGBoost settings stay fixed at the development values for every model version.</li>
+  </ul>
+
+  <div id="f-roll"></div>
+  <div id="f-gap"></div>
+  <p id="roll-note"></p>
+
+  <h3>Reliability on the test season</h3>
+  <p>These are the same diagrams as in the development section, now on <span data-k="test.n_games" data-f="int"></span> games. Each bin holds about 132 games, so the intervals are wide. P(home win) shows a few bins away from the diagonal, in both directions.</p>
+  <div class="grid3">
+    <div id="f-rel-test-p_home_win"></div>
+    <div id="f-rel-test-p_blowout"></div>
+    <div id="f-rel-test-p_tight"></div>
+  </div>
+
+  <h3>Error by game type</h3>
+  <div id="f-type"></div>
+
+  <h3>Retrain checks</h3>
+  <div class="tbl" id="tbl-checks"></div>
+</section>
+
+<!-- ============================================================ 7 -->
+<section id="monitoring">
+  <h2><span class="num">7</span>Monitoring: feature drift</h2>
+  <p>At each retrain check the replay compares every input column in the last 30 days with a reference group of games. The measure is the <b>PSI</b> (population stability index). The replay cuts the reference values into 10 equal-count bins. It then counts which share of the recent games falls into each bin. The PSI is large when these shares differ much from the expected 10% per bin.</p>
+  <p>The replay flags a column when its PSI is above <b>0.2</b>. In plain words: below 0.1 the column looks the same, between 0.1 and 0.2 it moved a little, and above 0.2 it moved enough that the recent games look like a different population. The threshold is a rule of thumb from credit scoring. It is not a statistical test, and the model can still predict well when a column is flagged.</p>
+  <div id="drift-note"></div>
+  <div id="f-drift-count"></div>
+  <div id="f-drift"></div>
+</section>
+
+<!-- ============================================================ 8 -->
+<section id="architecture">
+  <h2><span class="num">8</span>Architecture</h2>
+  <p>The pipeline runs on a laptop today. The cloud layer is written as code, but I have not applied it. Nothing on this page claims that a job or an API runs in the cloud.</p>
+  <figure class="fig">
+    <figcaption>
+      <div class="t">Data flow, serving, and delivery</div>
+      <div class="d">Solid blue outline: built and run on a laptop. Dashed grey outline: planned, not deployed yet.</div>
+    </figcaption>
+    <div class="scroll-x">
+<svg viewBox="0 0 980 560" role="img" aria-labelledby="arch-t arch-d" style="min-width:860px">
+  <title id="arch-t">Architecture diagram</title>
+  <desc id="arch-d">Snapshot export feeds a GCS raw folder, then staging, features, training with MLflow, the replay job, a serving model, and an API. GitHub Actions deploys through Workload Identity Federation. Terraform creates the cloud resources.</desc>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>
+  </defs>
+
+  <text x="10" y="20" class="strong">Data and model (Python package nbaxp)</text>
+
+  <!-- row 1 -->
+  <g transform="translate(10,36)"><rect class="box done" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">Snapshot export</text><text x="75" y="42" text-anchor="middle" class="small-t">BigQuery tables to</text><text x="75" y="56" text-anchor="middle" class="small-t">local Parquet</text></g>
+  <g transform="translate(205,36)"><rect class="box done" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">GCS raw</text><text x="75" y="42" text-anchor="middle" class="small-t">gs://nba-data/raw/</text><text x="75" y="56" text-anchor="middle" class="small-t">uploaded</text></g>
+  <g transform="translate(400,36)"><rect class="box done" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">Stage</text><text x="75" y="42" text-anchor="middle" class="small-t">DuckDB, in process</text><text x="75" y="56" text-anchor="middle" class="small-t">games, minutes</text></g>
+  <g transform="translate(595,36)"><rect class="box done" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">Features</text><text x="75" y="42" text-anchor="middle" class="small-t">as-of rule, one row</text><text x="75" y="56" text-anchor="middle" class="small-t">per game</text></g>
+  <g transform="translate(790,36)"><rect class="box done" width="170" height="74" rx="8"/><text x="85" y="24" text-anchor="middle" class="strong">Train</text><text x="85" y="42" text-anchor="middle" class="small-t">forward-chaining CV,</text><text x="85" y="56" text-anchor="middle" class="small-t">MLflow (SQLite) registry</text></g>
+  <path class="arrow" marker-end="url(#ah)" d="M160,73 H203"/>
+  <path class="arrow" marker-end="url(#ah)" d="M355,73 H398"/>
+  <path class="arrow" marker-end="url(#ah)" d="M550,73 H593"/>
+  <path class="arrow" marker-end="url(#ah)" d="M745,73 H788"/>
+
+  <!-- row 2 -->
+  <g transform="translate(790,170)"><rect class="box done" width="170" height="74" rx="8"/><text x="85" y="24" text-anchor="middle" class="strong">Replay job</text><text x="85" y="42" text-anchor="middle" class="small-t">2025-26 day by day,</text><text x="85" y="56" text-anchor="middle" class="small-t">retrain checks, drift</text></g>
+  <g transform="translate(595,170)"><rect class="box done" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">Serving model</text><text x="75" y="42" text-anchor="middle" class="small-t">exported file, no</text><text x="75" y="56" text-anchor="middle" class="small-t">MLflow at serve time</text></g>
+  <g transform="translate(400,170)"><rect class="box done" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">API</text><text x="75" y="42" text-anchor="middle" class="small-t">FastAPI, games of</text><text x="75" y="56" text-anchor="middle" class="small-t">2025-26 only</text></g>
+  <g transform="translate(205,170)"><rect class="box plan" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">Cloud Run service</text><text x="75" y="42" text-anchor="middle" class="small-t">nbaxp-api, scales to</text><text x="75" y="56" text-anchor="middle" class="small-t">zero. Not deployed yet</text></g>
+  <g transform="translate(10,170)"><rect class="box plan" width="150" height="74" rx="8"/><text x="75" y="24" text-anchor="middle" class="strong">Cloud Run job</text><text x="75" y="42" text-anchor="middle" class="small-t">nbaxp-replay, on demand.</text><text x="75" y="56" text-anchor="middle" class="small-t">Not deployed yet</text></g>
+  <path class="arrow" marker-end="url(#ah)" d="M875,110 V168"/>
+  <path class="arrow" marker-end="url(#ah)" d="M790,207 H747"/>
+  <path class="arrow" marker-end="url(#ah)" d="M595,207 H552"/>
+  <path class="arrow plan" marker-end="url(#ah)" d="M400,207 H357"/>
+  <text x="85" y="268" text-anchor="middle" class="small-t">cloud counterpart of the replay job</text>
+  <text x="280" y="268" text-anchor="middle" class="small-t">cloud host of the API</text>
+
+  <!-- delivery band -->
+  <text x="10" y="310" class="strong">Delivery and infrastructure</text>
+  <g transform="translate(10,326)"><rect class="box done" width="220" height="86" rx="8"/><text x="110" y="24" text-anchor="middle" class="strong">GitHub Actions: CI</text><text x="110" y="44" text-anchor="middle" class="small-t">lint and tests on each</text><text x="110" y="58" text-anchor="middle" class="small-t">pull request and push to main</text></g>
+  <g transform="translate(270,326)"><rect class="box plan" width="220" height="86" rx="8"/><text x="110" y="24" text-anchor="middle" class="strong">GitHub Actions: deploy</text><text x="110" y="44" text-anchor="middle" class="small-t">build image, push, update</text><text x="110" y="58" text-anchor="middle" class="small-t">service and job. Manual trigger</text><text x="110" y="72" text-anchor="middle" class="small-t">only. Not used yet</text></g>
+  <g transform="translate(530,326)"><rect class="box plan" width="200" height="86" rx="8"/><text x="100" y="24" text-anchor="middle" class="strong">Workload Identity Federation</text><text x="100" y="44" text-anchor="middle" class="small-t">keyless sign-in: GitHub gets a</text><text x="100" y="58" text-anchor="middle" class="small-t">short token for the deploy account.</text><text x="100" y="72" text-anchor="middle" class="small-t">No stored key. Not applied yet</text></g>
+  <g transform="translate(770,326)"><rect class="box plan" width="190" height="86" rx="8"/><text x="95" y="24" text-anchor="middle" class="strong">Artifact Registry</text><text x="95" y="44" text-anchor="middle" class="small-t">keeps the last 2 images.</text><text x="95" y="58" text-anchor="middle" class="small-t">Not applied yet</text></g>
+  <path class="arrow plan" marker-end="url(#ah)" d="M490,369 H528"/>
+  <path class="arrow plan" marker-end="url(#ah)" d="M730,369 H768"/>
+
+  <g transform="translate(10,440)"><rect class="box plan" width="470" height="86" rx="8"/><text x="235" y="24" text-anchor="middle" class="strong">Terraform</text><text x="235" y="44" text-anchor="middle" class="small-t">APIs, Artifact Registry, two service accounts, Workload Identity Federation,</text><text x="235" y="58" text-anchor="middle" class="small-t">Cloud Run job and service. Written and validated. Apply needs project Owner.</text><text x="235" y="72" text-anchor="middle" class="small-t">Not applied yet</text></g>
+  <g transform="translate(510,440)"><rect class="box plan" width="450" height="86" rx="8"/><text x="225" y="24" text-anchor="middle" class="strong">Two service accounts</text><text x="225" y="44" text-anchor="middle" class="small-t">Deploy account: used by GitHub Actions to push images and deploy.</text><text x="225" y="58" text-anchor="middle" class="small-t">Runtime account: used by the job and the API to read and write the bucket.</text><text x="225" y="72" text-anchor="middle" class="small-t">Not created yet</text></g>
+</svg>
+    </div>
+  </figure>
+  <ul>
+    <li><b>Built and run on a laptop:</b> snapshot export, staging, features, training with MLflow (SQLite backend), the replay, the CI workflow, and the unit tests. The bucket <code>gs://nba-data</code> exists and holds the raw snapshot.</li>
+    <li><b>Built and run on a laptop:</b> the API and the exported serving model. The API serves the 2025-26 games through <code>GET /games/{date}</code> and <code>POST /predict</code>.</li>
+    <li><b>Planned, not deployed yet:</b> the Cloud Run job and service, Artifact Registry, the two service accounts, Workload Identity Federation, and the deploy workflow. This page itself is static and needs none of them.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 9 -->
+<section id="limits">
+  <h2><span class="num">9</span>Limits</h2>
+  <ul id="limits-list">
+    <li><b>The edge over Elo is small.</b> In development the model lowers MAE by <span data-k="dev.boot_xgb_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points (95% interval <span data-k="dev.boot_xgb_vs_elo.mae.hi" data-f="neg" data-d="2"></span> to <span data-k="dev.boot_xgb_vs_elo.mae.lo" data-f="neg" data-d="2"></span>). On the test season the gain is <span data-k="test.boot_chain_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points, and the interval includes zero. A user would not feel this difference in single games.</li>
+    <li><b>The model does not know who plays.</b> It has no injury, lineup or rest-decision data. Player data enters only through the minutes of the 8 most-used players in the last 10 games.</li>
+    <li><b>No betting lines.</b> A line already contains injury and lineup news, so it is a stronger benchmark than Elo. The snapshot has no lines, so I made no comparison.</li>
+    <li><b>The blowout and tight-game probabilities say little.</b> P(blowout) ranges only from about 0.28 to 0.44 between games, and P(tight game) from about 0.20 to 0.28. Their Brier scores are close to the home-only baseline (blowout <span data-k="dev.models.xgboost.pooled.brier_p_blowout" data-d="4"></span> against <span data-k="dev.models.home_only.pooled.brier_p_blowout" data-d="4"></span>; tight <span data-k="dev.models.xgboost.pooled.brier_p_tight" data-d="4"></span> against <span data-k="dev.models.home_only.pooled.brier_p_tight" data-d="4"></span>).</li>
+    <li><b>One sigma is too narrow for some games.</b> Playoff games have a larger residual spread than regular-season games. On the test season the RMSE (<span data-k="test.models.chain.rmse" data-d="2"></span>) is above sigma (<span data-k="test.sigma" data-d="2"></span>), so the model is overconfident there.</li>
+    <li id="limit-retrain"></li>
+    <li><b>One test season is one sample.</b> The 2025-26 results come from <span data-k="test.n_games" data-f="int"></span> games of one season. The development MAE changes from fold to fold by up to <span data-k="dev.fold_mae_range" data-d="2"></span> points.</li>
+    <li><b>Neutral sites.</b> Only the NBA Cup final and the 2020 bubble count as neutral. Games abroad and other neutral-site games count as home games.</li>
+    <li><b>Arena data.</b> Travel distance uses one arena location per franchise, typed from general knowledge. Moves inside a city (Warriors 2019, Clippers 2024) are ignored.</li>
+    <li><b>Eliminated flag.</b> The flag ignores tiebreakers, so it can lag by one game.</li>
+    <li><b>Not live.</b> The snapshot ends with the 2025-26 season. The cloud layer is not deployed.</li>
+  </ul>
+</section>
+
+<footer>
+  <p>Built by <code>scripts/build_site.py</code> from the local pipeline outputs. Charts: Vega-Lite 5.21.0 loaded from a CDN. The JSON files in <code>docs/data/</code> are the only data the page reads.</p>
+</footer>
+</main>
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/vega@5.30.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@5.21.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@6.26.0"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>
