@@ -1,0 +1,5 @@
+google-cloud-bigquery>=3.25
+google-cloud-bigquery-storage
+pyarrow
+# 47+ ships no Intel-Mac wheel and fails to build from source
+cryptography<47
