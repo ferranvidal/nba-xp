@@ -11,6 +11,7 @@ dependencies = [
     "scikit-learn",
     "scipy",
     "mlflow",
+    "google-cloud-storage",
     # 47+ has no macOS x86_64 wheel; the local venv is x86_64 (Rosetta) because XGBoost on arm64 needs an arm64 libomp
     "cryptography<47",
 ]

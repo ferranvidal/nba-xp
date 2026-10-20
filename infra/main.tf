@@ -175,7 +175,7 @@ resource "google_cloud_run_v2_job" "replay" {
 
       containers {
         image = var.image
-        args  = ["replay"]
+        args  = ["pipeline"]
 
         resources {
           limits = {

@@ -29,19 +29,19 @@ def mean_fold_mae(result: dict) -> float:
     return sum(f["mae"] for f in result["folds"].values()) / len(result["folds"])
 
 
-def register(model, sigma: float) -> str:
+def register(model, sigma: float, name: str = MODEL_NAME) -> str:
     """Log the model with sigma and the feature list, register a new version, set the alias if none exists."""
     info = mlflow.xgboost.log_model(
         model,
         name="model",
-        registered_model_name=MODEL_NAME,
+        registered_model_name=name,
         metadata={"sigma": sigma, "feature_cols": core.FEATURE_COLS},
     )
     client = MlflowClient()
     try:
-        client.get_model_version_by_alias(MODEL_NAME, CHAMPION)
+        client.get_model_version_by_alias(name, CHAMPION)
     except MlflowException:
-        client.set_registered_model_alias(MODEL_NAME, CHAMPION, info.registered_model_version)
+        client.set_registered_model_alias(name, CHAMPION, info.registered_model_version)
     return info.registered_model_version
 
 
@@ -113,6 +113,15 @@ def train(data_dir: Path = Path("data")) -> dict:
         mlflow.log_table(pd.DataFrame(rows), "calibration.json")
         report["registered_version"] = register(final, best["sigma"])
     return report
+
+
+def has_champion(data_dir: Path = Path("data")) -> bool:
+    setup_mlflow(data_dir)
+    try:
+        MlflowClient().get_model_version_by_alias(MODEL_NAME, CHAMPION)
+    except MlflowException:
+        return False
+    return True
 
 
 def load_champion(data_dir: Path = Path("data")):

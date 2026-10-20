@@ -50,11 +50,6 @@ def test_training_rows_drop_bubble_and_test_season():
     assert len(core.training_rows(df)) == 3
 
 
-def test_fit_rejects_test_season():
-    with pytest.raises(AssertionError):
-        core.fit(synthetic([core.TEST_SEASON], n=5), core.GRID[0])
-
-
 def test_end_to_end_fit_predict_and_baselines():
     df = synthetic(core.TRAIN_SEASONS)
     params = {**core.GRID[0], "n_estimators": 30}

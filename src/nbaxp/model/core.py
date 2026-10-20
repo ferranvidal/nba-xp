@@ -2,7 +2,8 @@
 
 The predictive distribution of the home margin is Normal(mu, sigma), with one global sigma.
 Margins are integers and never 0, but the Normal is treated as continuous: no continuity correction.
-Nothing here reads 2025-26: `training_rows` asserts it.
+Development never reads 2025-26: `training_rows` asserts it. `fit` has no such guard, so the replay can train on
+earlier 2025-26 games.
 """
 
 import itertools
@@ -53,7 +54,6 @@ def folds(df: pd.DataFrame):
 
 
 def fit(train: pd.DataFrame, params: dict) -> XGBRegressor:
-    assert TEST_SEASON not in set(train["season"])
     return XGBRegressor(**BASE_PARAMS, **params).fit(train[FEATURE_COLS].astype(float), train["margin"])
 
 

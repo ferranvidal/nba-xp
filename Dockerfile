@@ -15,6 +15,6 @@ RUN pip install .
 
 USER app
 
-# The Cloud Run Job overrides the args with ["replay"].
+# The Cloud Run Job overrides the args with ["pipeline"].
 ENTRYPOINT ["nbaxp"]
 CMD ["api"]
