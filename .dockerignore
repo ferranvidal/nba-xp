@@ -1,0 +1,5 @@
+# Send only what the build needs.
+*
+!pyproject.toml
+!src
+**/__pycache__
