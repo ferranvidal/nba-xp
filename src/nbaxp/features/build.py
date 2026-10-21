@@ -28,6 +28,9 @@ ROTATION_GAMES = 10
 ROTATION_SIZE = 8
 LOAD_DAYS = (14, 7, 3)  # longest window first
 TRAVEL_DAYS = (3, 7)
+RATING_DAYS = 365  # window of the player rating
+RATING_SHRINK_MIN = 1000  # minutes of prior at plus-minus 0 in the player rating
+WEIGHT_APPEARANCES = 10  # appearances behind the rotation weight of a player
 
 # Feature name -> has a home-minus-away difference column
 FEATURES = {
@@ -45,6 +48,8 @@ FEATURES = {
     "rotation_min_3d": True,
     "rotation_min_7d": True,
     "rotation_min_14d": True,
+    "player_strength": True,
+    "availability": True,
     "eliminated": False,
     "win_or_go_home": False,
 }
@@ -95,7 +100,7 @@ class _State:
             self.conf_teams[(r.season, r.conference)].append(r.franchiseId)
         self.elo, self.elo_season = {}, {}
         self.log = defaultdict(list)  # team -> list of finished games (dict), oldest first
-        self.player_log = defaultdict(list)  # player -> [(day, minutes)]
+        self.player_log = defaultdict(list)  # player -> [(day, minutes, plus_minus)]
         self.wins = defaultdict(int)  # (season, team), regular season only
         self.losses = defaultdict(int)
         self.streak = {}  # team -> (season, signed streak)
@@ -141,13 +146,13 @@ class _State:
         if last:
             tot = defaultdict(float)
             for h in last:
-                for pid, m in h["players"]:
+                for pid, m, _ in h["players"]:
                     tot[pid] += m
             rotation = sorted(tot, key=lambda p: (-tot[p], p))[:ROTATION_SIZE]
             for n in LOAD_DAYS:
                 f[f"rotation_min_{n}d"] = 0.0
             for pid in rotation:
-                for d, m in reversed(self.player_log[pid]):
+                for d, m, _ in reversed(self.player_log[pid]):
                     if d < day - LOAD_DAYS[0]:
                         break
                     for n in LOAD_DAYS:
@@ -156,7 +161,35 @@ class _State:
         else:
             for n in LOAD_DAYS:
                 f[f"rotation_min_{n}d"] = np.nan
+
+        # NaN until the team has played a game in the current season (or if that game has no player rows).
+        f["player_strength"] = f["availability"] = np.nan
+        if in_season and rotation:
+            f["player_strength"] = self._player_strength(hist[-1]["players"], day)
+            played = {pid for pid, _, _ in hist[-1]["players"]}
+            f["availability"] = len(played.intersection(rotation)) / len(rotation)
         return f
+
+    def _player_strength(self, roster: list, day: int) -> float:
+        """Expected points per game above average, from the players of the team's last game.
+
+        Rating of a player: 48 * plus-minus / (minutes + shrinkage) over his games in the last 365 days.
+        Weight of a player: mean minutes of his last 10 appearances, rescaled to sum to 240. The sum of
+        weight * rating divided by 5 players * 48 minutes is the weighted mean rating.
+        """
+        num = den = 0.0
+        for pid, _, _ in roster:
+            log = self.player_log[pid]
+            weight = sum(m for _, m, _ in log[-WEIGHT_APPEARANCES:]) / len(log[-WEIGHT_APPEARANCES:])
+            minutes = plus_minus = 0.0
+            for d, m, pm in reversed(log):
+                if d < day - RATING_DAYS:
+                    break
+                minutes += m
+                plus_minus += pm
+            num += weight * 48 * plus_minus / (minutes + RATING_SHRINK_MIN)
+            den += weight
+        return num / den
 
     def _eliminated(self, team: str, conference: str, season: str) -> bool:
         """Max possible wins < current wins of the conference's last postseason spot (ignores tiebreakers).
@@ -240,8 +273,8 @@ class _State:
                 self.series_losses[(g["seriesId"], team)] += 1
             elif g["seasonType"] == "Play-In":
                 self.playin_games[(season, team)] += 1
-            for pid, m in players[team]:
-                self.player_log[pid].append((day, m))
+            for pid, m, pm in players[team]:
+                self.player_log[pid].append((day, m, pm))
 
 
 def build_features(games: pd.DataFrame, minutes: pd.DataFrame, schedule: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -255,8 +288,9 @@ def build_features(games: pd.DataFrame, minutes: pd.DataFrame, schedule: pd.Data
     games = games.reset_index(drop=True)
     games["day"] = (games.gameDate - pd.Timestamp("1970-01-01")).dt.days
     mins = defaultdict(list)
-    for gid, fid, pid, m in zip(*(minutes[c].tolist() for c in ("gameId", "franchiseId", "playerId", "minutes"))):
-        mins[(gid, fid)].append((pid, m))
+    cols = ("gameId", "franchiseId", "playerId", "minutes", "plus_minus")
+    for gid, fid, pid, m, pm in zip(*(minutes[c].tolist() for c in cols)):
+        mins[(gid, fid)].append((pid, m, pm))
 
     rows = []
     for _, day_games in groupby(games.to_dict("records"), key=lambda r: r["day"]):

@@ -42,13 +42,16 @@ def schedule_for(games_df):
     return pd.DataFrame(rows, columns=["season", "franchiseId", "conference", "n_scheduled"])
 
 
+MINUTES_COLS = ["gameId", "gameDate", "season", "franchiseId", "playerId", "minutes", "plus_minus"]
+
+
 def minutes_for(games_df, players_by_team):
     rows = []
     for g in games_df.itertuples():
         for team in (g.homeFranchiseId, g.awayFranchiseId):
             for pid, m in players_by_team.get(team, {}).items():
-                rows.append((g.gameId, g.gameDate, g.season, team, pid, m))
-    return pd.DataFrame(rows, columns=["gameId", "gameDate", "season", "franchiseId", "playerId", "minutes"])
+                rows.append((g.gameId, g.gameDate, g.season, team, pid, m, 0.0))
+    return pd.DataFrame(rows, columns=MINUTES_COLS)
 
 
 def run(games, players_by_team=None):
@@ -124,6 +127,40 @@ def test_rotation_minutes_load():
     assert math.isnan(f.loc["g1", "home_rotation_min_3d"])
     # same-day rule: g2 and g3 are on 01-02, BOS g1 minutes only (30*8)
     assert f.loc["g2", "away_rotation_min_3d"] == 8 * 30
+
+
+def test_player_strength_and_availability():
+    # g0 is 371 days before g3: it is outside the 365-day rating window but counts as an appearance.
+    games = [
+        game("g0", "2020-01-01", BOS, DEN, 100, 90, season="2019-20"),
+        game("g1", "2021-01-01", BOS, NYK, 110, 100),
+        game("g2", "2021-01-03", LAL, BOS, 100, 105),
+        game("g3", "2021-01-06", BOS, NYK, 100, 99),
+    ]
+    rows = [  # (game, team, player, minutes, plus_minus)
+        ("g0", BOS, "a", 30, 100),
+        ("g1", BOS, "a", 30, 12), ("g1", BOS, "b", 10, -4), ("g1", BOS, "c", 20, 6),
+        ("g1", NYK, "x", 40, 8), ("g1", NYK, "y", 20, -8),
+        ("g2", BOS, "a", 30, 6), ("g2", BOS, "c", 10, 0), ("g2", BOS, "d", 20, -2),
+    ]  # fmt: skip
+    date = {g["gameId"]: g["gameDate"] for g in games}
+    season = {g["gameId"]: g["season"] for g in games}
+    minutes = pd.DataFrame([(g, date[g], season[g], t, p, m, pm) for g, t, p, m, pm in rows], columns=MINUTES_COLS)
+    f = build_features(pd.DataFrame(games), minutes, schedule_for(pd.DataFrame(games))).set_index("gameId")
+    # Before g3, BOS ratings over g1 and g2 (K = 1000): a 48*18/(60+1000), c 48*6/(30+1000), d 48*(-2)/(20+1000).
+    # BOS played g2 with a, c, d. Weights = mean minutes of the last 10 appearances: a 30 (g0, g1, g2), c 15, d 20.
+    # Weights rescaled to 240 and divided by 5 * 48 minutes = weighted mean rating.
+    bos = (30 * 48 * 18 / 1060 + 15 * 48 * 6 / 1030 + 20 * 48 * -2 / 1020) / 65
+    # NYK played g1 only, with x and y: x 48*8/(40+1000), y 48*(-8)/(20+1000), weights 40 and 20.
+    nyk = (40 * 48 * 8 / 1040 + 20 * 48 * -8 / 1020) / 60
+    assert f.loc["g3", "home_player_strength"] == pytest.approx(bos)
+    assert f.loc["g3", "away_player_strength"] == pytest.approx(nyk)
+    assert f.loc["g3", "diff_player_strength"] == pytest.approx(bos - nyk)
+    # BOS rotation is a, b, c, d (fewer than 8 players) and b missed g2: 3 of 4. NYK: x and y both played g1.
+    assert f.loc["g3", "home_availability"] == 0.75 and f.loc["g3", "away_availability"] == 1.0
+    # No game yet in 2020-21 (BOS has g0 from the previous season): NaN
+    assert math.isnan(f.loc["g1", "home_player_strength"]) and math.isnan(f.loc["g1", "home_availability"])
+    assert math.isnan(f.loc["g2", "home_player_strength"])  # LAL, first game of the season
 
 
 def test_eliminated_rule():

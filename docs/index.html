@@ -42,10 +42,10 @@
   <p>From that one distribution the model derives three probabilities. <b>P(home win)</b> is the chance that the margin is above 0. <b>P(blowout)</b> is the chance that the margin is 15 points or more in either direction. <b>P(tight game)</b> is the chance that the margin is 5 points or fewer in either direction.</p>
 
   <h3>Headline result on the test season</h3>
-  <p>On the 2025-26 test season (<span data-k="test.n_games" data-f="int"></span> games), the model misses the margin by <span data-k="test.models.chain.mae" data-d="1"></span> points on average. That is <span data-k="test.boot_chain_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points better than the Elo baseline and <span data-k="test.gain_home_only" data-d="1"></span> points better than the home-only baseline. The edge over the Elo baseline is small. The 95% interval of the difference includes zero, so one test season cannot show that the edge is real.</p>
+  <p>On the 2025-26 test season (<span data-k="test.n_games" data-f="int"></span> games), the model misses the margin by <span data-k="test.models.chain.mae" data-d="1"></span> points on average. That is <span data-k="test.boot_chain_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points better than the Elo baseline and <span data-k="test.gain_home_only" data-d="1"></span> points better than the home-only baseline. The 95% interval of the difference is <span data-k="test.boot_chain_vs_elo.mae.hi" data-f="neg" data-d="2"></span> to <span data-k="test.boot_chain_vs_elo.mae.lo" data-f="neg" data-d="2"></span> points. One test season is one sample, so it cannot settle whether the edge is real.</p>
   <div class="tiles" id="tiles"></div>
   <div class="callout">
-    <p><b>Where the model is weaker than it looks.</b> Test MAE (<span data-k="test.models.chain.mae" data-d="2"></span>) is higher than development MAE (<span data-k="dev.models.xgboost.pooled.mae" data-d="2"></span>). The Elo baseline rose by the same amount (<span data-k="dev.models.elo.pooled.mae" data-d="2"></span> to <span data-k="test.models.elo.mae" data-d="2"></span>). I infer that 2025-26 was harder to predict for both models. I did not test why.</p>
+    <p><b>Where the model is weaker than it looks.</b> Test MAE (<span data-k="test.models.chain.mae" data-d="2"></span>) is higher than development MAE (<span data-k="dev.models.xgboost.pooled.mae" data-d="2"></span>). The Elo baseline rose by about the same amount (<span data-k="dev.models.elo.pooled.mae" data-d="2"></span> to <span data-k="test.models.elo.mae" data-d="2"></span>). I infer that 2025-26 was harder to predict for both models. I did not test why.</p>
   </div>
 
   <h3>One game, as the model sees it</h3>
@@ -121,7 +121,7 @@
 <!-- ============================================================ 3 -->
 <section id="features">
   <h2><span class="num">3</span>Features</h2>
-  <p>The model has <span data-k="features.n_feature_cols"></span> input columns from 10 feature families. Most families give three columns per quantity: one for the home team (<code>home_</code>), one for the away team (<code>away_</code>), and the home value minus the away value (<code>diff_</code>). The strongest columns are the <code>diff_</code> ones: <code>diff_win_pct</code>, <code>diff_elo</code> and <code>diff_wins</code>.</p>
+  <p>The model has <span data-k="features.n_feature_cols"></span> input columns from 11 feature families. Most families give three columns per quantity: one for the home team (<code>home_</code>), one for the away team (<code>away_</code>), and the home value minus the away value (<code>diff_</code>). The strongest columns are the <code>diff_</code> ones: <code>diff_player_strength</code>, <code>diff_elo</code> and <code>diff_pd_last10</code>.</p>
   <p>Each chart below uses the <span data-k="features.n_rows" data-f="int"></span> training games (2015-16 to 2024-25, bubble excluded). It plots the mean home margin of the games in each bin of the home-minus-away value. The bars are 95% intervals of the mean. A flat line means the feature alone does not move the margin.</p>
   <div id="fam-list"></div>
 
@@ -186,6 +186,12 @@
         <td data-l="Evidence" id="ev-elo"></td>
       </tr>
       <tr>
+        <td data-l="Decision"><span class="badge new">new</span> Add player-based team strength: a rating of the players in the team's last game</td>
+        <td data-l="Alternatives">No player data. Box-score metrics (formulas such as PER or BPM that combine points, rebounds and assists per minute). RAPM (regularized adjusted plus-minus, a regression on who is on court).</td>
+        <td data-l="Why">I added this family after the first results showed that the model only matched the Elo baseline, and that only Elo and rest reduced the error when I removed a family. The model knew nothing about who plays, so Elo showed a trade or an injury only after results drifted. I fixed the parameters before I looked at the test season: a 365-day window, a shrinkage of 1,000 minutes, a weight from the last 10 appearances. I did no tuning. Plus-minus needs only the box score. Box-score metrics need a formula I would have to choose. RAPM needs a regression on stint data that I did not build. I did not test either alternative.</td>
+        <td data-l="Evidence" id="ev-players"></td>
+      </tr>
+      <tr>
         <td data-l="Decision">Count a team as eliminated when it cannot reach 10th place in its conference (8th before 2020-21)</td>
         <td data-l="Alternatives">Always use 8th place. Compute tiebreakers exactly.</td>
         <td data-l="Why">The play-in started in 2020-21. Teams in 7th to 10th place compete for the last two playoff spots, so a team is out only when it cannot reach 10th. The check ignores tiebreakers, so the flag can lag by one game.</td>
@@ -224,7 +230,7 @@
 <!-- ============================================================ 5 -->
 <section id="validation">
   <h2><span class="num">5</span>Validation on the development seasons</h2>
-  <p>On the development folds the XGBoost model beats the Elo baseline on MAE by <span data-k="dev.boot_xgb_vs_elo.mae.mean" data-f="neg" data-d="3"></span> points, and the 95% interval stays above zero. On the Brier score of P(home win) the gain is <span data-k="dev.boot_xgb_vs_elo.brier_p_home_win.mean" data-f="neg" data-d="4"></span>, and the interval includes zero. Both baselines are far behind the home-only baseline. All numbers are out-of-fold: the model that predicts a game never trained on that game's season or later.</p>
+  <p>On the development folds the XGBoost model beats the Elo baseline on MAE by <span data-k="dev.boot_xgb_vs_elo.mae.mean" data-f="neg" data-d="3"></span> points, and the 95% interval stays above zero. On the Brier score of P(home win) the gain is <span data-k="dev.boot_xgb_vs_elo.brier_p_home_win.mean" data-f="neg" data-d="4"></span> (95% interval <span data-k="dev.boot_xgb_vs_elo.brier_p_home_win.hi" data-f="neg" data-d="4"></span> to <span data-k="dev.boot_xgb_vs_elo.brier_p_home_win.lo" data-f="neg" data-d="4"></span>). Both baselines are far behind the home-only baseline. All numbers are out-of-fold: the model that predicts a game never trained on that game's season or later.</p>
   <div class="tbl" id="tbl-dev"></div>
   <p class="small">Each interval comes from a paired bootstrap over the <span data-k="dev.n_oof" data-f="int"></span> out-of-fold games (2,000 resamples, seed 0). The bootstrap treats games as independent.</p>
 
@@ -356,8 +362,8 @@
 <section id="limits">
   <h2><span class="num">9</span>Limits</h2>
   <ul id="limits-list">
-    <li><b>The edge over Elo is small.</b> In development the model lowers MAE by <span data-k="dev.boot_xgb_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points (95% interval <span data-k="dev.boot_xgb_vs_elo.mae.hi" data-f="neg" data-d="2"></span> to <span data-k="dev.boot_xgb_vs_elo.mae.lo" data-f="neg" data-d="2"></span>). On the test season the gain is <span data-k="test.boot_chain_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points, and the interval includes zero. A user would not feel this difference in single games.</li>
-    <li><b>The model does not know who plays.</b> It has no injury, lineup or rest-decision data. Player data enters only through the minutes of the 8 most-used players in the last 10 games.</li>
+    <li><b>The edge over Elo is small.</b> In development the model lowers MAE by <span data-k="dev.boot_xgb_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points (95% interval <span data-k="dev.boot_xgb_vs_elo.mae.hi" data-f="neg" data-d="2"></span> to <span data-k="dev.boot_xgb_vs_elo.mae.lo" data-f="neg" data-d="2"></span>). On the test season the gain is <span data-k="test.boot_chain_vs_elo.mae.mean" data-f="neg" data-d="2"></span> points (95% interval <span data-k="test.boot_chain_vs_elo.mae.hi" data-f="neg" data-d="2"></span> to <span data-k="test.boot_chain_vs_elo.mae.lo" data-f="neg" data-d="2"></span>). A user would not feel this difference in single games.</li>
+    <li><b>The model knows who played last, not who plays tonight.</b> It uses the players of the team's last game, their plus-minus and their recent minutes. It has no injury report, no lineup for the game and no rest decisions. A star who is out tonight but played last game still counts as playing. A missed game shows only in the next game, through the availability column.</li>
     <li><b>No betting lines.</b> A line already contains injury and lineup news, so it is a stronger benchmark than Elo. The snapshot has no lines, so I made no comparison.</li>
     <li><b>The blowout and tight-game probabilities say little.</b> P(blowout) ranges only from about 0.28 to 0.44 between games, and P(tight game) from about 0.20 to 0.28. Their Brier scores are close to the home-only baseline (blowout <span data-k="dev.models.xgboost.pooled.brier_p_blowout" data-d="4"></span> against <span data-k="dev.models.home_only.pooled.brier_p_blowout" data-d="4"></span>; tight <span data-k="dev.models.xgboost.pooled.brier_p_tight" data-d="4"></span> against <span data-k="dev.models.home_only.pooled.brier_p_tight" data-d="4"></span>).</li>
     <li><b>One sigma is too narrow for some games.</b> Playoff games have a larger residual spread than regular-season games. On the test season the RMSE (<span data-k="test.models.chain.rmse" data-d="2"></span>) is above sigma (<span data-k="test.sigma" data-d="2"></span>), so the model is overconfident there.</li>

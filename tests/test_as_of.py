@@ -41,4 +41,5 @@ def test_features_on_d_ignore_games_on_or_after_d(data, date):
     on_d = full[full.gameDate == d].drop(columns="margin").reset_index(drop=True)
     cut_d = cut[cut.gameDate == d].drop(columns="margin").reset_index(drop=True)
     assert len(on_d) > 0
+    assert on_d[["home_player_strength", "away_availability"]].notna().any().all()  # the new columns are compared
     pd.testing.assert_frame_equal(on_d, cut_d)

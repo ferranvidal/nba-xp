@@ -29,19 +29,26 @@ def mean_fold_mae(result: dict) -> float:
     return sum(f["mae"] for f in result["folds"].values()) / len(result["folds"])
 
 
+def champion_features(name: str = MODEL_NAME) -> list[str] | None:
+    """Feature list of the champion, or None if there is no champion."""
+    try:
+        return mlflow.models.get_model_info(f"models:/{name}@{CHAMPION}").metadata["feature_cols"]
+    except MlflowException:
+        return None
+
+
 def register(model, sigma: float, name: str = MODEL_NAME) -> str:
-    """Log the model with sigma and the feature list, register a new version, set the alias if none exists."""
+    """Log the model with sigma and the feature list, register a new version. Set the alias if there is no champion,
+    or if the champion was trained on another feature list: it cannot score the current feature table."""
+    stale = champion_features(name) != core.FEATURE_COLS
     info = mlflow.xgboost.log_model(
         model,
         name="model",
         registered_model_name=name,
         metadata={"sigma": sigma, "feature_cols": core.FEATURE_COLS},
     )
-    client = MlflowClient()
-    try:
-        client.get_model_version_by_alias(name, CHAMPION)
-    except MlflowException:
-        client.set_registered_model_alias(name, CHAMPION, info.registered_model_version)
+    if stale:
+        MlflowClient().set_registered_model_alias(name, CHAMPION, info.registered_model_version)
     return info.registered_model_version
 
 
@@ -116,12 +123,9 @@ def train(data_dir: Path = Path("data")) -> dict:
 
 
 def has_champion(data_dir: Path = Path("data")) -> bool:
+    """True if a champion exists and was trained on the current feature list."""
     setup_mlflow(data_dir)
-    try:
-        MlflowClient().get_model_version_by_alias(MODEL_NAME, CHAMPION)
-    except MlflowException:
-        return False
-    return True
+    return champion_features() == core.FEATURE_COLS
 
 
 def load_champion(data_dir: Path = Path("data")):

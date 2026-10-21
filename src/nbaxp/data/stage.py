@@ -44,7 +44,7 @@ def stage(data_dir: Path = Path("data"), snapshot: Path | None = None) -> dict[s
         f"""
         copy (
             select p.gameId, cast(p.gameDate as date) as gameDate, p.season, t.franchiseId, p.playerId,
-                   p.secondsPlayed / 60.0 as minutes
+                   p.secondsPlayed / 60.0 as minutes, p.plusMinusPoints as plus_minus
             from player_stats p
             join teams t on t.teamId = p.teamId
             join games g on g.gameId = p.gameId

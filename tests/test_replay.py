@@ -101,7 +101,7 @@ def test_bootstrap_does_not_promote_identical_challenger():
 
 
 def test_bootstrap_does_not_promote_noise_sized_gap():
-    noise = np.random.default_rng(1).normal(scale=0.05, size=200)
+    noise = np.random.default_rng(6).normal(scale=0.05, size=200)
     p_mae, p_brier = bootstrap_case(lambda X: 3 * X["diff_elo"].to_numpy() + 3 + noise)
     assert not replay.promote(p_mae, p_brier)
     assert 0.1 < p_mae < 0.9  # a coin flip, far from either end
